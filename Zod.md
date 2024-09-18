@@ -826,3 +826,393 @@ const EmployedPerson = z.intersection(Person, Employee);
 ```
 
 Intersections 보다는 .merge()를 사용하는 것을 추천한다.
+
+#### Recursive types
+
+Zod에서 재귀적인 스키마를 정의할 수 있지만 TypeScript의 한계로 인해 해당 타입을 정적으로 추론할 수 없다.
+
+```ts
+const baseCategorySchema = z.object({
+  name: z.string(),
+});
+
+type Category = z.infer<typeof baseCategorySchema> & {
+  subcategories: Category[];
+};
+
+const categorySchema: z.ZodType<Category> = baseCategorySchema.extend({
+  subcategories: z.lazy(() => categorySchema.array()),
+});
+
+categorySchema.parse({
+  name: "People",
+  subcategories: [
+    {
+      name: "Politicians",
+      subcategories: [
+        {
+          name: "Presidents",
+          subcategories: [],
+        },
+      ],
+    },
+  ],
+}); // 성공
+```
+
+#### ZodType과 ZodEffects
+
+z.ZodType과 z.ZodEffects는 입력 데이터의 유효성을 검사하고, 변환하거나 세부적으로 다룰 때 매우 유용하다. 특히, 입력과 출력 타입을 명시적으로 정의해서 복잡한 데이터 구조에서 좀 더 정밀하게 처리할 수 있도록 해준다.
+refine, transform, preprocess 등의 메서드를 사용해 데이터의 전처리, 변환 및 추가적인 유효성 검사를 할 수 있다.
+
+```ts
+const isValidId = (id: string): id is `${string}/${string}` =>
+  id.split("/").length === 2;
+
+// 기본 스키마: ID는 반드시 "문자열/문자열" 형식이어야 한다.
+const baseSchema = z.object({
+  id: z.string().refine(isValidId, {
+    message: "ID는 반드시 '문자열/문자열' 형식이어야 합니다.",
+  }),
+});
+
+// 입력과 출력 타입을 명시적으로 정의
+type Input = z.input<typeof baseSchema> & {
+  children: Input[]; // 입력 타입: 재귀적인 children을 포함
+};
+
+type Output = z.output<typeof baseSchema> & {
+  children: Output[]; // 출력 타입: 재귀적인 children을 포함
+};
+
+// 재귀적인 스키마를 정의하고, ID 형식을 유효성 검사
+const schema: z.ZodType<Output, z.ZodTypeDef, Input> = baseSchema.extend({
+  children: z.lazy(() => schema.array()), // children을 재귀적으로 정의
+});
+
+// 예시 데이터: 계층 구조를 가진 ID와 children
+schema.parse({
+  id: "parent/child",
+  children: [
+    {
+      id: "child/grandchild",
+      children: [],
+    },
+  ],
+});
+```
+
+#### JSON 타입
+
+JSON 값을 검증하려면 아래 코드를 사용할 수 있다.
+
+```ts
+const literalSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+type Literal = z.infer<typeof literalSchema>;
+type Json = Literal | { [key: string]: Json } | Json[];
+const jsonSchema: z.ZodType<Json> = z.lazy(() =>
+  z.union([literalSchema, z.array(jsonSchema), z.record(jsonSchema)])
+);
+
+jsonSchema.parse(data);
+```
+
+이 코드는 literalSchema를 사용하여 다양한 JSON 타입을 검증하고 있다. JSON 객체를 구조적으로 검증할 수 있는 방법을 제공한다. Zod의 재귀 스키마 지원 덕분에 복잡한 JOSN 구조를 처리할 수 있다.
+
+#### Cyclical objects 순환 객체
+
+Zod는 재귀적인 스키마를 지원하지만, 순환 데이터가 들어오면 무한 루프를 유발할 수 있다. 이 문제를 방지하려면, 순환 객체를 감지하는 방법을 사용하는 것이 좋다.
+
+#### Promises
+
+Zod에서 프로미스 스키마를 다루는 방식은 약간 다르다. 검증은 두 단계로 이루어진다.
+
+1. Zod는 입력이 프로미스의 인스턴스인지(즉, .then과 .catch 메서드가 있는지) 동기적으로 확인한다.
+2. Zod는 .then을 사용하여 기존 프로미스에서 추가 검증 단계를 연결한다. 실패할 경우 .catch를 통해 처리해야한다.
+
+```js
+numberPromise.parse("tuna");
+//ZodError: Non-Promise type: string
+
+numberPromise.parse(Promise.resolve("tuna"));
+// => Promise<number>
+```
+
+```js
+const test = async () => {
+  await numberPromise.parse(Promise.resolve("tuna"));
+  // ZodError: Non-number type: string
+
+  await numberPromise.parse(Promise.resolve(3.14));
+  // => 3.14
+};
+```
+
+#### Instanceof
+
+```js
+class Test {
+  name: string;
+}
+
+const TestSchema = z.instanseof(Test);
+```
+
+z.Instanceof를 사용하여 입력이 특정 클래스의 인스턴스인지 확인할 수 있다. 이는 서드파티 라이브러리에서 내보낸 클래스와 입력값을 비교할 때 유용하다.
+
+```js
+const blob: any = "whatever";
+TestSchema.parse(new Test()); // 통과
+TestSchema.parse(blob); // 예외 발생
+```
+
+### 함수(Function) 검증
+
+Zod는 함수 스키마를 정의할 수 있어, 함수의 입력과 출력을 별도의 검증 코드 없이 확인할 수 있다.
+
+```js
+const myFunction = z.function();
+
+type myFunction = z.infer<typeod myFunction>;
+// => () => unknown
+```
+
+입력과 출력을 정의할 수 있다.
+
+```js
+const myFunction = z
+  .function()
+  .args(z.string(), z.number()) // 임의의 인자 개수를 허용
+  .return(z.boolean());
+
+type myFunction = z.infer<typeof myFunction>;
+// => (arg0: string, arg1: number) => boolean
+```
+
+함수 스키마에서 .implement() 메서드가 있어, 입력과 출력을 자동으로 검증하는 새로운 함수를 반환한다.
+
+```js
+const trimmedLnegth = z.
+	.function()
+    .args(z.string()) // 임의의 인자 개수를 허용
+    .returns(z.number())
+    .implement((x) => {
+    	// TypeScript는 x가 문자열임을 인자한다!
+    	return x.trim().length;
+    });
+
+trummedLength("sandwich"); // => 8
+trummedLength("    asdf"); // => 4
+```
+
+#### Preprocess
+
+Zod는 이제 원시 타입 강제 변환을 지원하며, 이를 위해서 .preprocess()를 사용할 필요는 없다. 그러나 검증 전에 입력값에 대해 변환을 적용하려면 .preprocess()를 사용할 수 있다.
+
+```js
+const castToString = z.preprocess((val) => String(val), z.string());
+```
+
+이는 ZodEffects 인스턴스를 반환한다. ZodEffects는 전처리, 개선 및 변환과 관련된 모든 로직을 포함하는 래퍼 클래스이다.
+
+#### 커스텀 스키마
+
+Zod는 z.custom()을 사용하여 임의의 타입을 위한 스키마를 정의할 수 있다. 이를 통해 기본적으로 지원되지 않는 타입(예: 템플릿 문자열 리터럴)에 대한 스키마를 만들 수 있다.
+
+```js
+const px = z.custom<`${number}px`>((val) => {
+	return typeod val === 'string' ? /^\d+px$/.test(val) : false;
+})
+
+type px = z.infer<typeof px>; // `${number}px`
+
+px.parse("42px"); // "42px"
+px.parse("42vw"); // throws;
+```
+
+위 내용처럼 필요한 경우 커스텀 스키마를 만들어 사용할 수 있다.
+
+### JSON 스키마 메서드
+
+모든 Zod 스키마에는 특정 메서드들이 포함되어 있다.
+
+#### .parse
+
+```js
+.parse(data: unknown): T
+```
+
+Zod 스키마는 .parse 메서드를 통해 데이터를 검증할 수 있다. 데이터가 유효한 경우, 타입 정보를 포함한 값이 반환된다. 그렇지 않으면 오류가 발생한다.
+
+**중요: `.parse`가 반환하는 값은 입력 변수의 깊은 복사본이다.**
+
+```js
+const stringSchema = z.string();
+
+stringSchema.parse("fish"); // => "fish" 반환
+stringSchema.parse(12); // 오류 발생
+```
+
+#### .parseAsync
+
+```ts
+.parseAsync(data:unknown): Promise<T>
+```
+
+비동기 검증이나 변환을 사용할 경우 `.parseAsync` 메서드를 사용해야 한다.
+
+```ts
+const stringSchema = z.string().refine(async (val) => val.length <= 8);
+
+await stringSchema.parseAsync("hello"); // => "hello" 반환
+await stringSchema.parseAsync("hello world"); // => 오류 발생
+```
+
+#### .safeParse
+
+```ts
+.safeParse(data: unknown): { success: true; data: T; } | { success: false; error: ZodError; }
+```
+
+Zod가 검증 실패 시 오류를 발생시키지 않기를 원할 경우 .safeParse를 사용할 수 있다. 이 메서드는 성공시 데이터를 포함하고, 실패 시 ZodError 인스턴스를 포함하는 객체를 반환한다.
+
+```ts
+stringSchema.safeParse(12);
+// => { success: false; error: ZodError }
+
+stringSchema.safeParse("billie");
+// => { success: true; data: 'billie' }
+```
+
+결과는 분기된 유니언 타입(discriminated union)이므로 오류를 쉽게 처리할 수 있다.
+
+```js
+const result = stringSchema.safeParse("billie");
+if (!result.success) {
+  // 오류 처리 후 리턴
+  result.error;
+} else {
+  // 데이터 사용
+  result.data;
+}
+```
+
+#### .safeParseAsync 또는 .spa
+
+`.safePase`의 비동기 버전이다.
+
+```ts
+await stringSchema.safeParseAsync("billie");
+```
+
+```ts
+await stringSchema.spa("billie");
+```
+
+#### refine
+
+```ts
+.refine(validator: (data:T)=>any, params?: RefineParams)
+```
+
+Zod를 사용해 맞춤 검증 로직을 추가할 수 있다. refinement types로 불리는 타입 검증을 실행할 수 있는데, 이는 TypeScript의 타입 시스템으로 표현할 수 없는 사항을 검사할 때 유용하다. 예를 들어 문자열의 길이가 특정 범위를 넘지 않으면 또는 숫자가 정수인지 확인하는 경우가 있다.
+
+```ts
+const myString = z.string().refine((val) => val.length <= 255, {
+  message: "String can't be more than 255 character",
+});
+```
+
+⚠️ 검증 함수는 오류를 발생시키지 않아야 하며, 실패를 신호하기 위해 false 또는 falsy 값을 반환해야 합니다.
+
+refine 메서드는 두 개의 인자를 받는다. 첫 번째는 검증 함수, 두 번째는 옵션 객체이다. 옵션을 통해 오류 메세지와 경로 등을 사용자 정의할 수 있다.
+
+```ts
+const passwordForm = z
+  .object({
+    password: z.string(),
+    confirm: z.string(),
+  })
+  .refine((data) => data.password === data.confirm, {
+    message: "Passwords don't match",
+    path: ["confirm"], // 오류가 발생한 경로
+  });
+
+passwordForm.parse({ password: "asdf", confirm: "qwer" });
+```
+
+```ts
+ZodError {
+	issues: [{
+    	"code": "custom",
+      	"path": ["confirm"],
+      	"message": "Passwords don't match"
+    }]
+}
+```
+
+#### 비동기 refine
+
+비동기 검증도 가능하다.
+
+```ts
+const userId = z.string().refine(async (id) => {
+  // 데이터베이스에서 ID가 존재하는지 확인
+  return true;
+});
+```
+
+⚠️ 비동기 검증을 사용할 경우 .parseAsync를 반드시 사용해야 합니다.
+
+#### .superRefine
+
+.refine 메서드는 더 강력한 .superRefine 메서드의 단축 문법이다. 예를 들어:
+
+```ts
+const String = z.array(z.string()).superRefine((val, ctx) => {
+  if (val.legnth > 3) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.too_big,
+      maximum: 3,
+      type: "array",
+      inclusive: true,
+      message: "Too many items",
+    });
+  }
+
+  if (val.length !== new Set(val).size) {
+    ctx.addIssue({
+      code: z.ZodeIssueCode.custom,
+      message: "No duplisates allowed.",
+    });
+  }
+});
+```
+
+.superRefine을 사용하면 여러 문제를 추가할 수 있으며, ZodIssueCode를 다양하게 지정할 수 있다.
+
+#### .transform
+
+검증 후 데이터를 변환하려면 .transform 메서드를 사용할 수 있다.
+
+```ts
+const stringToNumber = z.string().transform((val) => val.length);
+
+stringToNumber.parse("string"); // => 6
+```
+
+검증 및 변환을 동시에 수행할 수 있다.
+
+```ts
+const numberInString = z.string().tarnsform((val, ctx) => {
+  const parsed = parseInt(val);
+  if (isNaN(parsed)) {
+    ctx.addIssue({
+      code: z.ZodeIssueCode.custom,
+      message: "Not a number",
+    });
+    return z.NEVER;
+  }
+  return parsed;
+});
+```
